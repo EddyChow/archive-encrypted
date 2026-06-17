@@ -1,13 +1,16 @@
 # archive-encrypted
 
-A bash script to create gzip-compressed, AES-256 encrypted archives of project folders with configurable exclusion patterns.
+A bash script for **encrypt, decrypt, and upload** project archives — cross-platform (macOS + Ubuntu).
 
 ## Features
 
 - **AES-256 encryption** with SHA-512 key derivation and high iteration count (65011712)
+- **Three modes**: encrypt, decrypt, upload — all in one script
+- **GoFile upload** — free, no account required, unlimited file size
 - **Configurable exclusions** — skips logs, databases, backups, archives, and build artifacts
 - **Folder name preserved** inside the tarball
-- **Two modes**: interactive passphrase prompt or `ARCHIVE_PASSWORD` environment variable
+- **Cross-platform** — works on macOS (BSD) and Ubuntu (GNU)
+- **Interactive or non-interactive** — passphrase prompt or `ARCHIVE_PASSWORD` env var
 
 ## Usage
 
@@ -15,33 +18,45 @@ A bash script to create gzip-compressed, AES-256 encrypted archives of project f
 
 ```bash
 cd /path/to/your-project
-./scripts/archive-encrypted.sh
+./scripts/archive-encrypted.sh encrypt
 ```
 
-You will be prompted for a passphrase twice.
+You will be prompted for a passphrase. After encryption, you'll be offered to upload to GoFile.
 
 ### Encrypt (non-interactive)
 
 ```bash
-ARCHIVE_PASSWORD='your-secret' ./scripts/archive-encrypted.sh
-```
-
-### Encrypt with custom output path
-
-```bash
-./scripts/archive-encrypted.sh /tmp/my-backup.tar.gz.gpg
+ARCHIVE_PASSWORD='your-secret' ./scripts/archive-encrypted.sh encrypt /tmp/backup.tar.gz.gpg
 ```
 
 ### Decrypt
 
 ```bash
+./scripts/archive-encrypted.sh decrypt backup.tar.gz.gpg /tmp/restore
+```
+
+Or non-interactive:
+```bash
+ARCHIVE_PASSWORD='your-secret' ./scripts/archive-encrypted.sh decrypt backup.tar.gz.gpg /tmp/restore
+```
+
+Or manually:
+```bash
 gpg -d backup.tar.gz.gpg | tar -xzf - -C /destination/parent/dir
 ```
 
-### Decrypt with passphrase on command line
+### Upload to GoFile
 
 ```bash
-gpg --batch --yes --pinentry-mode loopback --passphrase 'your-secret' -d backup.tar.gz.gpg | tar -xzf - -C /destination/parent/dir
+./scripts/archive-encrypted.sh upload backup.tar.gz.gpg
+```
+
+Output includes download page, file name, MD5, and credentials for managing the upload.
+
+### Help
+
+```bash
+./scripts/archive-encrypted.sh help
 ```
 
 ## Exclusion Patterns
@@ -53,6 +68,17 @@ gpg --batch --yes --pinentry-mode loopback --passphrase 'your-secret' -d backup.
 | Backups    | `*.bak`, `*backup*`, `db_backup/`, `log_backup/`|
 | Archives   | `*.gz`, `*.zip`, `*.tar`, `*.tgz`              |
 | Build junk | `node_modules/`, `__pycache__/`, `bin/`, `obj/`, `.vs/`, `.venv/`, `venv/` |
+
+## Cross-Platform Compatibility
+
+| Feature       | macOS (BSD)                  | Ubuntu (GNU)           |
+|---------------|------------------------------|------------------------|
+| `realpath`    | Fallback via python3         | Native                 |
+| `stat`        | `stat -f%z`                  | `stat -c%s`           |
+| `date`        | `date +%Y%m%d-%H%M%S`        | Same                   |
+| `read -r -p`  | Supported                    | Supported              |
+| `numfmt`      | Not available (fallback)     | Native                 |
+| `gpg`         | `brew install gnupg`         | `apt install gnupg`   |
 
 ## Bug Fix
 
