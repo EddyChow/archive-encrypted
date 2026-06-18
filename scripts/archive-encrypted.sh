@@ -6,8 +6,10 @@
 #   ./scripts/archive-encrypted.sh encrypt [output-file]   # (default mode)
 #   ./scripts/archive-encrypted.sh decrypt <file.gpg> [dest]
 #   ./scripts/archive-encrypted.sh upload <file.gpg>
+#   ./scripts/archive-encrypted.sh download <gofile-url|meta-file> [output-file]
 #
 # Password: set ARCHIVE_PASSWORD, or you will be prompted.
+# GoFile token: set GOFILE_TOKEN, or pass a .meta file from upload.
 #
 # Examples:
 #   ./scripts/archive-encrypted.sh                              # encrypt current project
@@ -15,6 +17,8 @@
 #   ARCHIVE_PASSWORD='secret' ./scripts/archive-encrypted.sh    # non-interactive encrypt
 #   ./scripts/archive-encrypted.sh decrypt backup.tar.gz.gpg /tmp/restore
 #   ./scripts/archive-encrypted.sh upload backup.tar.gz.gpg     # upload to GoFile
+#   ./scripts/archive-encrypted.sh download https://gofile.io/d/abc123 backup.gpg
+#   GOFILE_TOKEN='...' ./scripts/archive-encrypted.sh download https://gofile.io/d/abc123
 #
 # Cross-platform: works on macOS (BSD) and Ubuntu (GNU).
 
@@ -403,11 +407,177 @@ print(d.get('md5', ''))
   echo "  accountToken:  ${ACCOUNT_TOKEN}"
   echo "  folderId:      ${FOLDER_ID}"
   echo
+  # Write .meta file for later download (next to the encrypted file)
+  local META_FILE="${INPUT_FILE}.meta"
+  cat > "$META_FILE" <<METAEOF
+# GoFile upload metadata — used by: archive-encrypted.sh download <this-file>
+gofile_code="${DOWNLOAD_PAGE##*/}"
+gofile_token="${ACCOUNT_TOKEN}"
+gofile_file_id="${FILE_ID}"
+gofile_file_name="${FILE_NAME}"
+gofile_md5="${FILE_MD5}"
+METAEOF
+  echo "  Meta file:     ${META_FILE}"
+  echo
   echo "  Note: Guest uploads are temporary (~10 days if unused)."
   echo "        The file is GPG-encrypted — recipients need your passphrase to open it."
   echo
   echo "  To decrypt:"
   echo "    ARCHIVE_PASSWORD='...' ./scripts/archive-encrypted.sh decrypt <filename.gpg> /destination"
+  echo
+  echo "  To download later:"
+  echo "    GOFILE_TOKEN='${ACCOUNT_TOKEN}' ./scripts/archive-encrypted.sh download ${DOWNLOAD_PAGE}"
+}
+
+# ─── Mode: download ───────────────────────────────────────────────────────────#
+
+do_download() {
+  local INPUT="${1:?Usage: archive-encrypted.sh download <gofile-url|meta-file> [output-file]}"
+  local OUTPUT_FILE="${2:-}"
+
+  # ─── Determine if input is a .meta file or a GoFile URL ───
+  local CONTENT_CODE GUEST_TOKEN FILE_ID FILE_NAME EXPECTED_MD5
+
+  if [[ -f "$INPUT" && "$INPUT" == *.meta ]]; then
+    # Load metadata from .meta file (created during upload)
+    echo "Loading metadata from: ${INPUT}"
+    source "$INPUT"
+    CONTENT_CODE="$gofile_code"
+    GUEST_TOKEN="$gofile_token"
+    FILE_ID="$gofile_file_id"
+    FILE_NAME="$gofile_file_name"
+    EXPECTED_MD5="$gofile_md5"
+  else
+    # Extract content code from GoFile URL or raw code
+    CONTENT_CODE="${INPUT##*/}"  # strip path
+    CONTENT_CODE="${CONTENT_CODE%%\?*}"  # strip query params
+    GUEST_TOKEN="${GOFILE_TOKEN:-}"
+  fi
+
+  if [[ -z "$CONTENT_CODE" ]]; then
+    echo "Error: could not determine GoFile content code from: $INPUT" >&2
+    exit 1
+  fi
+
+  if [[ -z "$GUEST_TOKEN" ]]; then
+    echo "Error: GOFILE_TOKEN is required for download." >&2
+    echo "Set it with: GOFILE_TOKEN='...' or use a .meta file from upload." >&2
+    exit 1
+  fi
+
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Download mode"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  GoFile code:  ${CONTENT_CODE}"
+  echo "  Token:        ${GUEST_TOKEN:0:8}..."
+  echo
+
+  # ─── Try GoFile contents API to get direct download link ───
+  echo "Fetching download link from GoFile API..."
+  local API_RESP API_STATUS
+  API_RESP=$(curl -sS \
+    -H "Authorization: Bearer ${GUEST_TOKEN}" \
+    "https://api.gofile.io/contents/${CONTENT_CODE}?wt=4fd6sg89d7s6")
+  API_STATUS=$(echo "$API_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+
+  local DOWNLOAD_URL
+
+  if [[ "$API_STATUS" == "ok" ]]; then
+    # API succeeded — extract file info
+    echo "API response: ok"
+    DOWNLOAD_URL=$(echo "$API_RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)['data']
+children = d.get('children', {})
+if isinstance(children, dict):
+    files = list(children.values())
+elif isinstance(children, list):
+    files = children
+else:
+    files = []
+if d.get('type') == 'file':
+    files = [d]
+if files:
+    f = files[0]
+    print(f.get('link', ''))
+    import sys
+    sys.stderr.write(f.get('name', '') + '\n')
+    sys.stderr.write(f.get('md5', '') + '\n')
+" 2>/tmp/gofile-meta.txt)
+    FILE_NAME="${FILE_NAME:-$(head -1 /tmp/gofile-meta.txt 2>/dev/null)}"
+    EXPECTED_MD5="${EXPECTED_MD5:-$(sed -n '2p' /tmp/gofile-meta.txt 2>/dev/null)}"
+  elif [[ "$API_STATUS" == "error-notPremium" ]]; then
+    echo "API: requires premium (error-notPremium). Falling back to direct download..."
+    # Try constructing direct download URL if we have fileId
+    if [[ -n "$FILE_ID" && -n "$FILE_NAME" ]]; then
+      # Get a download server
+      local DL_SERVER
+      DL_SERVER=$(curl -sS "https://api.gofile.io/servers" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+servers = d.get('data', {}).get('servers', [])
+print(servers[0]['name'] if servers else 'store1')
+" 2>/dev/null)
+      [[ -z "$DL_SERVER" ]] && DL_SERVER="store1"
+      DOWNLOAD_URL="https://${DL_SERVER}.gofile.io/download/web/${FILE_ID}/${FILE_NAME}"
+      echo "Constructed direct URL: ${DOWNLOAD_URL}"
+    else
+      echo "Error: GoFile API requires premium, and no fileId available for direct download." >&2
+      echo "  Open in browser: https://gofile.io/d/${CONTENT_CODE}" >&2
+      echo "  Or re-upload with this script to generate a .meta file." >&2
+      exit 1
+    fi
+  elif [[ "$API_STATUS" == "error-rateLimit" ]]; then
+    echo "Error: GoFile rate-limited this IP. Wait a few minutes and retry." >&2
+    exit 1
+  else
+    echo "Error: GoFile API returned: ${API_STATUS}" >&2
+    echo "$API_RESP" >&2
+    exit 1
+  fi
+
+  if [[ -z "$DOWNLOAD_URL" ]]; then
+    echo "Error: could not obtain a download link." >&2
+    exit 1
+  fi
+
+  # ─── Determine output filename ───
+  if [[ -z "$OUTPUT_FILE" ]]; then
+    OUTPUT_FILE="${FILE_NAME:-download.tar.gz.gpg}"
+  fi
+
+  echo
+  echo "Downloading: ${FILE_NAME:-unknown}"
+  echo "Output:      ${OUTPUT_FILE}"
+  echo "MD5:         ${EXPECTED_MD5:-N/A}"
+  echo
+
+  curl --fail --progress-bar -L "$DOWNLOAD_URL" \
+    -H "Authorization: Bearer ${GUEST_TOKEN}" \
+    -o "$OUTPUT_FILE"
+
+  echo
+
+  # ─── Verify MD5 if available ───
+  if [[ -n "$EXPECTED_MD5" ]]; then
+    local ACTUAL_MD5
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      ACTUAL_MD5=$(md5 -q "$OUTPUT_FILE")
+    else
+      ACTUAL_MD5=$(md5sum "$OUTPUT_FILE" | awk '{print $1}')
+    fi
+    if [[ "$ACTUAL_MD5" != "$EXPECTED_MD5" ]]; then
+      echo "Error: MD5 mismatch!" >&2
+      echo "  Expected: ${EXPECTED_MD5}" >&2
+      echo "  Actual:   ${ACTUAL_MD5}" >&2
+      exit 1
+    fi
+    echo "✓ MD5 verified: ${ACTUAL_MD5}"
+  fi
+
+  echo
+  echo "✓ Downloaded: ${OUTPUT_FILE}"
+  ls -lh "$OUTPUT_FILE"
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────#
@@ -425,6 +595,9 @@ case "$MODE" in
   upload|u)
     do_upload "$@"
     ;;
+  download|dl)
+    do_download "$@"
+    ;;
   help|--help|-h)
     echo "Usage: archive-encrypted.sh <mode> [options]"
     echo
@@ -432,15 +605,19 @@ case "$MODE" in
     echo "  encrypt [output-file]    Create encrypted archive (default mode)"
     echo "  decrypt <file.gpg> [dst] Decrypt and extract archive"
     echo "  upload <file.gpg>        Upload encrypted file to GoFile"
+    echo "  download <url|meta> [out] Download from GoFile"
     echo
     echo "Environment:"
     echo "  ARCHIVE_PASSWORD         Set passphrase (skip interactive prompt)"
+    echo "  GOFILE_TOKEN             GoFile account token for download"
     echo
     echo "Examples:"
     echo "  ./scripts/archive-encrypted.sh encrypt"
     echo "  ARCHIVE_PASSWORD='s3cret' ./scripts/archive-encrypted.sh encrypt /tmp/backup.gpg"
     echo "  ./scripts/archive-encrypted.sh decrypt backup.tar.gz.gpg /tmp/restore"
     echo "  ./scripts/archive-encrypted.sh upload backup.tar.gz.gpg"
+    echo "  ./scripts/archive-encrypted.sh download backup.tar.gz.gpg.meta"
+    echo "  GOFILE_TOKEN='...' ./scripts/archive-encrypted.sh download https://gofile.io/d/abc123 out.gpg"
     ;;
   *)
     echo "Error: unknown mode '${MODE}'. Use: encrypt, decrypt, upload, or help" >&2
