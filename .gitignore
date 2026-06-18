@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Encrypted archives and metadata (never commit these)
+*.gpg
+*.meta
+
+# OS
+.DS_Store
+Thumbs.db
