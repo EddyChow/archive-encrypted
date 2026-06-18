@@ -505,13 +505,8 @@ def _sha256_file(path: str) -> str:
 # ─── Mode: encrypt ──────────────────────────────────────────────────────────────
 
 def do_encrypt(args):
-    """Encrypt the current project directory."""
-    if args.dir:
-        project_dir = Path(args.dir).resolve()
-    else:
-        # Default: the directory containing the scripts/ folder (i.e., the project root)
-        script_path = Path(__file__).resolve()
-        project_dir = script_path.parent.parent
+    """Encrypt a project directory."""
+    project_dir = Path(args.project_dir).resolve()
 
     if not project_dir.is_dir():
         print(f"Error: project directory not found: {project_dir}", file=sys.stderr)
@@ -741,9 +736,9 @@ Examples:
     sub = parser.add_subparsers(dest="mode", required=True)
 
     # encrypt
-    p_enc = sub.add_parser("encrypt", help="Encrypt current project (default)")
+    p_enc = sub.add_parser("encrypt", help="Encrypt a project directory")
+    p_enc.add_argument("project_dir", help="Project directory to encrypt")
     p_enc.add_argument("-o", "--output", help="Output file path")
-    p_enc.add_argument("-d", "--dir", help="Project directory to encrypt (default: auto-detect from script location)")
     p_enc.add_argument("--no-upload", action="store_true", help="Skip upload prompt")
     p_enc.add_argument("--password", help="Passphrase (or set ARCHIVE_PASSWORD env)")
     p_enc.set_defaults(func=do_encrypt)
