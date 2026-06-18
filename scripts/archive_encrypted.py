@@ -660,8 +660,39 @@ def do_upload_file(file_path: Path, gofile_token: str = None):
 
 
 def do_upload(args):
-    """Upload CLI entry point."""
-    do_upload_file(Path(args.file))
+    """Encrypt project directory and upload to GoFile."""
+    project_dir = Path(args.project_dir).resolve()
+    output_file = Path(args.output)
+
+    if not project_dir.is_dir():
+        print(f"Error: project directory not found: {project_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if output_file.exists():
+        print(f"Error: output file already exists: {output_file}", file=sys.stderr)
+        sys.exit(1)
+
+    project_name = project_dir.name
+
+    # Step 1: Encrypt
+    print(SEP)
+    print("  Encrypt + Upload mode")
+    print(SEP)
+    print(f"  Project:  {project_name}")
+    print(f"  Source:   {project_dir}")
+    print(f"  Output:   {output_file}")
+    print()
+
+    passphrase = get_passphrase(confirm=True)
+    ArchiveCrypto.encrypt_file_stream(project_dir, output_file, passphrase)
+    passphrase = None
+
+    file_size = output_file.stat().st_size
+    print(f"  ✓ Encrypted: {output_file} ({_human_size(file_size)})")
+    print()
+
+    # Step 2: Upload
+    do_upload_file(output_file)
 
 
 # ─── Mode: download ────────────────────────────────────────────────────────────
@@ -751,8 +782,10 @@ Examples:
     p_dec.set_defaults(func=do_decrypt)
 
     # upload
-    p_up = sub.add_parser("upload", help="Upload encrypted file to GoFile")
-    p_up.add_argument("file", help="File to upload")
+    p_up = sub.add_parser("upload", help="Encrypt project directory and upload to GoFile")
+    p_up.add_argument("project_dir", help="Project directory to encrypt")
+    p_up.add_argument("output", help="Output file path (e.g. /tmp/backup.tar.gz.gpg)")
+    p_up.add_argument("--password", help="Passphrase (or set ARCHIVE_PASSWORD env)")
     p_up.set_defaults(func=do_upload)
 
     # download
