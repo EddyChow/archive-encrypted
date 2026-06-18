@@ -516,7 +516,7 @@ def do_encrypt(args):
     parent_dir = project_dir.parent
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_file = Path(args.output) if args.output else parent_dir / f"{project_name}-{timestamp}.tar.gz.gpg"
+    output_file = Path(args.output)
 
     if output_file.exists():
         print(f"Error: output file already exists: {output_file}", file=sys.stderr)
@@ -738,7 +738,7 @@ Examples:
     # encrypt
     p_enc = sub.add_parser("encrypt", help="Encrypt a project directory")
     p_enc.add_argument("project_dir", help="Project directory to encrypt")
-    p_enc.add_argument("-o", "--output", help="Output file path")
+    p_enc.add_argument("output", help="Output file path (e.g. /tmp/backup.tar.gz.gpg)")
     p_enc.add_argument("--no-upload", action="store_true", help="Skip upload prompt")
     p_enc.add_argument("--password", help="Passphrase (or set ARCHIVE_PASSWORD env)")
     p_enc.set_defaults(func=do_encrypt)
